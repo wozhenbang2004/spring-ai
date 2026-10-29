@@ -1,0 +1,88 @@
+name: Validate optional chat-client auto-configuration
+
+on:
+  push:
+    branches:
+      - validate/chat-client-optional-7251
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spring-ai-7251-validation
+  cancel-in-progress: true
+
+jobs:
+  scoped-build:
+    if: >-
+      github.repository == 'wozhenbang2004/spring-ai' &&
+      github.ref == 'refs/heads/validate/chat-client-optional-7251' &&
+      github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      MAVEN_OPTS: -Xmx1024m -XX:MaxMetaspaceSize=384m -XX:ActiveProcessorCount=2
+      JAVA_TOOL_OPTIONS: -Xmx512m -XX:ActiveProcessorCount=2
+      MODULE: auto-configurations/models/chat/client/spring-ai-autoconfigure-model-chat-client
+    steps:
+      - name: Check out validation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: liberica
+          java-version: '17.0.21'
+
+      - name: Verify candidate files and record environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          java -version
+          javac -version
+          printf '%s  %s\n' \
+            cc3dd8af50cfcda85c0e141e27688f592a5e5124d875b89c4346a5c616e71556 \
+            "$MODULE/src/main/java/org/springframework/ai/model/chat/client/autoconfigure/ChatClientAutoConfiguration.java" \
+            0426f23d5026203b861ec5ecfc021350f05813b73eea061b633797208e2240a7 \
+            "$MODULE/src/test/java/org/springframework/ai/model/chat/client/autoconfigure/ChatClientAutoConfigurationTests.java" \
+            | sha256sum --check --strict
+          ./mvnw --version
+
+      - name: Build module and reactor dependencies with format validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./mvnw -B -ntp -C -T 1 \
+            -Dmaven.artifact.threads=1 \
+            -Daether.connector.basic.threads=1 \
+            -DforkCount=1 -DreuseForks=true \
+            -Dkotlin.compiler.daemon=false \
+            -Dmaven.build.cache.enabled=false \
+            -Dmaven.build.cache.local.enabled=false \
+            -P'!format-apply,format-check' \
+            clean package -am -pl "$MODULE"
+
+      - name: Verify regression tests ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          reports = Path(os.environ['MODULE']) / 'target/surefire-reports'
+          report = reports / ('TEST-org.springframework.ai.model.chat.client.'
+                              'autoconfigure.ChatClientAutoConfigurationTests.xml')
+          suite = ET.parse(report).getroot()
+          counts = {name: int(suite.get(name, '0'))
+                    for name in ('tests', 'failures', 'errors', 'skipped')}
+          print(f'ChatClientAutoConfigurationTests: {counts}')
+          assert counts == {'tests': 14, 'failures': 0, 'errors': 0, 'skipped': 0}, counts
+          PY
+          git diff --exit-code
